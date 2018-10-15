@@ -1,0 +1,268 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- music3 build file 
+  Requires database tables set up: use build.xml in subdirectory database.
+  For Oracle, requires env variables ORACLE_USER, ORACLE_PW, ORACLE_SITE
+  ORACLE_SITE should be dbs2.cs.umb.edu:1521:dbs2 inside cs.umb.edu.
+  From outside, use a putty tunnel and ORACLE_SITE localhost:1521:dbs2 
+  The putty tunnel uses local port 1521, remote dbs2.cs.umb.edu:1521
+  For MySQL use, requires env vars MYSQL_SITE, MYSQL_USER, MYSQL_PW.
+  MYSQL_SITE should be "localhost:3333" at home with tunnel
+  and topcat.cs.umb.edu in cs.umb.edu. 
+ 
+  For HSQLDB use, no user/password info is needed, but you need to
+   start the hsqldb server (see build.xml in subdir database).
+ -->
+<project name="music3" default="build" basedir=".">
+	<!--Load environment variables and give them prefix "env." -->
+	<property environment="env" />
+	<property name="ORACLE_USER" value="${env.ORACLE_USER}" />
+	<property name="ORACLE_PW" value="${env.ORACLE_PW}" />
+	<property name="ORACLE_SITE" value="${env.ORACLE_SITE}" />
+	<property name="MYSQL_USER" value="${env.MYSQL_USER}" />
+	<property name="MYSQL_PW" value="${env.MYSQL_PW}" />
+	<property name="MYSQL_SITE" value="${env.MYSQL_SITE}" />
+	<!-- assemble DB URLs from env vars. Examples:
+	    "jdbc:oracle:thin:@localhost:1531:dbs2"  from home, via tunnel
+	    "jdbc:oracle:thin:@dbs2.cs.umb.edu:1521:dbs2" from inside cs.umb.edu firewall
+	    "jdbc:mysql://localhost:3333/joedb" when using tunnel to topcat
+	    "jdbc:mysql://topcat.cs.umb.edu/joedb" from inside cs.umb.edu
+	    -->
+	<property name="ORACLE_URL" value="jdbc:oracle:thin:@${env.ORACLE_SITE}" />
+	<property name="MYSQL_URL" value = "jdbc:mysql://${env.MYSQL_SITE}/${env.MYSQL_USER}db"/>
+
+	<!-- Global properties for this build -->
+	<property environment="env" />
+	<!-- on PC, maybe c:\tomcat-8.0, on UNIX, /home/username/cs636/tomcat-8.0 -->
+	<property name="CATALINA_HOME" value="${env.CATALINA_HOME}" />
+	<!-- on PC, http://localhost:8080, at cs.umb.edu, 
+	   http://topcat.cs.umb.edu:xxxxx  -->
+	<property name="TOMCAT_URL" value="${env.TOMCAT_URL}" />
+	<property name="deploy.dir" value="${CATALINA_HOME}/webapps/${ant.project.name}" />
+
+	<property name="database.dir" value="database" />
+	<property name="src.dir" value="src" />
+	<property name="webinf.dir" value="WebContent/WEB-INF" />
+	<!-- Note new location of classes, even in client-server case-->
+	<property name="classes.dir" value="${webinf.dir}/classes" />
+	<!-- the main set of jars is set that is deployed with the web app -->
+	<property name="lib.dir" value="${webinf.dir}/lib" />
+	<!-- lib has jars needed only for clientserver case, add-ons to main set,
+	     which includes all the driver jars.  Note that we do not need to *deploy* 
+	     (i.e., install with the web app) the driver jars, because they
+	      are not directly used in the web app case. Instead, we need to
+	      make sure they are in tomcat's lib dir, so tomcat can create the needed
+	      Datasource objects. The preconfigured tomcat has the needed driver jars.
+	   -->
+	<property name="clientserver-lib.dir" value="lib" />
+	<!-- for clientserver executions, let eclipselink do early initializetions-->
+	<property name="JAVAAGENT" value="-javaagent:${webinf.dir}/lib/eclipselink.jar"/>
+	
+	<!-- Classpath declarations -->
+	<path id="project.classpath">
+		<pathelement location="${classes.dir}" />
+		<fileset dir="${lib.dir}">
+			<include name="**/*.jar" />
+		</fileset>
+		<!-- put needed JDBC drivers, junit's jar in path too -->
+		<fileset dir="${clientserver-lib.dir}">
+			<include name="**/*.jar" />
+		</fileset>
+		<!--for compiling servlets -->
+		<pathelement location="${CATALINA_HOME}/lib/servlet-api.jar" />
+	</path>
+	
+	<target name="init">
+		<mkdir dir="${classes.dir}" />
+	</target>
+	<target name="clean">
+		<delete dir="${classes.dir}" />
+		<!-- delete junit test output -->
+		<delete>
+			<fileset dir="${basedir}">
+				<include name="TEST*.txt" />
+			</fileset>
+		</delete>
+	</target>
+	<target name="build" depends="init">
+		<mkdir dir="${classes.dir}" />
+		<javac srcdir="${src.dir}" debug="on" destdir="${classes.dir}" classpathref="project.classpath" includeantruntime="false">
+			<compilerarg value="-Xlint:deprecation"/>
+		</javac>
+	</target>
+
+	<!-- use the power of ant to edit a file, substitute username, pw 
+		     to give us persistence.xml with current username, pw in it.
+	 -->
+	<!-- Watch out about mixing these actions with similar actions
+		in eclipse. After doing an ant action, it's best to Refresh
+		the project so that eclipse knows what happened. -->
+	<!-- Also note the trick of flag files: touch creates an empty file 
+		 (a "flag file") of given filename. Here the existence of the flag file 
+		 clientserver.flag means one of the clientserver configs was done.
+		 Existence of the flag file web.flag means one of the web configs was done.
+		 Each config target deletes the opposite flag file and creates its own type.
+		 The targets checkConfigClientServer and checkConfigWeb check for the flag files.
+		 Also, the current database int use (oradb or whatever) is saved in a
+		 little text file currentdb.txt for display by checkConfigxxx.
+		 These little files belong to the ant build system and live in
+		 the same directory as build.xml (and don't get deployed).
+     -->
+	<target name="config-clientserver-oradb" depends="build">
+		<echo message="configuring project for Oracle, putting its persistence.xml on classpath" />
+		<echo message="replacing username with ${env.ORACLE_USER}, password with ${env.ORACLE_PW}, also site" />
+		<!-- and copy persistence.xml to src/META-INF for use from eclipse 
+			   (use project refresh, and set Properties>Java Persistence>Connection to Oracle)-->
+		<filter token="username" value="${env.ORACLE_USER}" />
+		<filter token="password" value="${env.ORACLE_PW}" />
+		<filter token="oracle_url" value="${ORACLE_URL}" />
+		<copy file="database/oracle/persistence.xml" todir="${src.dir}/META-INF" filtering="true" overwrite="true" />
+		<copy file="database/oracle/persistence.xml" todir="${classes.dir}/META-INF" filtering="true" overwrite="true" />
+		<echo file="currentdb.txt" message="oradb" />
+		<delete file="web.flag" />
+		<touch file="clientserver.flag" />
+	</target>
+	<target name="config-clientserver-mysqldb" depends="build">
+		<echo message="configuring project for MySql, putting its persistence.xml on classpath" />
+		<echo message="replacing username with ${env.MYSQL_USER}, password with ${env.MYSQL_PW}" />
+		<!-- and copy persistence.xml to src/META-INF for use from eclipse 
+		      (use project refresh, and set Properties>Java Persistence>Connection to None,
+		      to avoid useless validation errors caused by case sensitivity problem)-->
+		<filter token="username" value="${env.MYSQL_USER}" />
+		<filter token="password" value="${env.MYSQL_PW}" />
+		<filter token="mysql_url" value="${MYSQL_URL}" />
+		<copy file="database/mysql/persistence.xml" todir="${src.dir}/META-INF" filtering="true" overwrite="true" />
+		<copy file="database/mysql/persistence.xml" todir="${classes.dir}/META-INF" filtering="true" overwrite="true" />
+		<echo file="currentdb.txt" message="mysqldb" />
+		<delete file="web.flag" />
+		<touch file="clientserver.flag" />
+	</target>
+	<target name="config-clientserver-hsqldb" depends="build">
+		<echo message="configuring project for HSQLDB, putting its persistence.xml on classpath" />
+		<!-- copy hsql version of persistence.xml (no fixup needed) to classpath -->
+		<!-- and copy it to src/META-INF for use from eclipse 
+		     (use project refresh, and set Properties>Java Persistence>Connection to HSQLDB)-->
+		<copy file="database/hsql/persistence.xml" todir="${src.dir}/META-INF" overwrite="true" />
+		<copy file="database/hsql/persistence.xml" todir="${classes.dir}/META-INF" overwrite="true" />
+		<echo file="currentdb.txt" message="hsqldb" />
+		<delete file="web.flag" />
+		<touch file="clientserver.flag" />
+	</target>
+	<target name="config-web-oradb" depends="build">
+		<copy file="database/oracle/web-persistence.xml" tofile="${src.dir}/META-INF/persistence.xml" overwrite="true" />
+		<copy file="database/oracle/web-persistence.xml" tofile="${classes.dir}/META-INF/persistence.xml" overwrite="true" />
+		<echo file="currentdb.txt" message="oradb" />
+		<delete file="clientserver.flag" />
+		<touch file="web.flag" />
+	</target>
+	<target name="config-web-mysqldb" depends="build">
+		<copy file="database/mysql/web-persistence.xml" tofile="${src.dir}/META-INF/persistence.xml" overwrite="true" />
+		<copy file="database/mysql/web-persistence.xml" tofile="${classes.dir}/META-INF/persistence.xml" overwrite="true" />
+		<delete file="clientserver.flag" />
+		<echo file="currentdb.txt" message="mysqldb" />
+		<touch file="web.flag" />
+	</target>
+	<target name="config-web-hsqldb" depends="build">
+		<copy file="database/hsql/web-persistence.xml" tofile="${src.dir}/META-INF/persistence.xml" overwrite="true" />
+		<copy file="database/hsql/web-persistence.xml" tofile="${classes.dir}/META-INF/persistence.xml" overwrite="true" />
+		<delete file="clientserver.flag" />
+		<echo file="currentdb.txt" message="hsqldb" />
+		<touch file="web.flag" />
+	</target>
+
+	<!--check that one of the above client-server config targets has been used -->
+	<target name="config-check-clientserver">
+		<available file="${classes.dir}/META-INF/persistence.xml" property="configOK" />
+		<available file="clientserver.flag" property="csSetup" />
+		<fail message="You need to run ant config-clientserver-xxxdb" unless="configOK" />
+		<fail message="You need to run ant config-clientserver-xxxdb (not config-web-xxxdb)" unless="csSetup" />
+		<loadfile property="currentdb" srcFile="currentdb.txt" />
+		<echo message="config-check-clientserver: JPA is set up for client-server use with ${currentdb}" />
+	</target>
+
+	<!--check that one of the above web config targets has been used -->
+	<target name="config-check-web">
+		<available file="${classes.dir}/META-INF/persistence.xml" property="configOK" />
+		<available file="web.flag" property="webSetup" />
+		<fail message="You need to run ant config-web-xxxdb" unless="configOK" />
+		<fail message="You need to run ant config-web-xxxdb (not config-clientserver-xxxdb)" unless="webSetup" />
+		<loadfile property="currentdb" srcFile="currentdb.txt" />
+		<echo message="config-check-web: JPA is set up for web use with ${currentdb}" />
+	</target>
+
+	<!-- set up one target "testDAO" to run all DAO unit tests -->
+	<target name="testDAO" depends="testDAO1, testDAO2"/>
+	<target name="testDAO1" depends = "build">
+		<echo message="testDAO1 DAO layer testing...look for details in TEST*.txt"/>
+		<junit fork="true">
+		    <jvmarg value="${JAVAAGENT}"/>
+			<formatter type="brief" />
+			<test name="cs636.music.dao.ProductDAOTest" />
+			<classpath refid="project.classpath" />
+		</junit>
+	</target>
+	<target name="testDAO2" depends="build">
+		<junit fork="true" printsummary="yes">
+		    <jvmarg value="${JAVAAGENT}"/>
+			<formatter type="brief"/>
+			<test name="cs636.music.dao.DownloadDAOTest" />
+			<classpath refid="project.classpath" />
+		</junit>
+	</target>
+
+	<!--change to curl if using Mac-->
+	<target name="webTest1">
+		<echo message="running wget for welcome.html" />
+		<exec executable="wget">
+			<arg line="${TOMCAT_URL}/${ant.project.name}/welcome.html" />
+		</exec>
+	</target>
+	
+	<!-- this often just returns the welcome page because the user is not yet known -->
+	<target name="webTest2">
+		<echo message="running wget to submit request" />
+		<exec executable="wget">
+			<arg line="${TOMCAT_URL}/${ant.project.name}/product.html?productCode=8601" />
+		</exec>
+	</target>
+	
+	<target name="webSysTest">
+		<echo message="running wget for SysTestServlet" />
+		<exec executable="wget">
+			<arg line="${TOMCAT_URL}/${ant.project.name}/servlet/SystemTest" />
+		</exec>
+	</target>
+
+	<!--Using JPA, we can configure for each database in persistence.xml, use
+	         one execution target for all databases-->
+	<target name="sysTest" depends="build, config-check-clientserver">
+		<java fork="true" classname="cs636.music.presentation.SystemTest" failonerror="true">
+		    <jvmarg value="${JAVAAGENT}"/>
+			<classpath refid="project.classpath" />
+			<arg file="test.dat" />
+		</java>
+	</target>
+	
+	<target name="userApp" depends="build">
+		<java fork="true" classname="cs636.music.presentation.UserApp" failonerror="true" dir="${basedir}">
+		    <jvmarg value="${JAVAAGENT}"/>
+			<classpath refid="project.classpath" />
+		</java>
+	</target>
+
+	<target name="adminApp" depends="build">
+		<java fork="true" classname="cs636.music.presentation.AdminApp" failonerror="true" dir="${basedir}">
+		    <jvmarg value="${JAVAAGENT}"/>
+			<classpath refid="project.classpath" />
+		</java>
+	</target>
+	
+	<!-- simple deployment: copy WebContent file tree to webapps area -->
+	<!-- also, clean up first -->
+	<target name="deploy" depends="build, config-check-web">
+		<delete dir="${deploy.dir}" />
+		<copy todir="${deploy.dir}">
+			<fileset dir="WebContent" />
+		</copy>
+	</target>
+
+</project>
